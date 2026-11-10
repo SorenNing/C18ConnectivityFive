@@ -1,0 +1,73 @@
+name: build-c18-connectivity-five
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Toolchain
+        run: |
+          set -euo pipefail
+          xcodebuild -version
+          xcrun --sdk iphoneos --show-sdk-version
+      - name: Build dylib
+        run: |
+          set -euo pipefail
+          SDK="$(xcrun --sdk iphoneos --show-sdk-path)"
+          mkdir -p build dist/pkg/DEBIAN dist/pkg/Library/MobileSubstrate/DynamicLibraries
+          SRC=(Tweak.m C18FiveConfig.m C18FiveModules.m C18FivePrefs.m)
+          for ARCH in arm64 arm64e; do
+            xcrun --sdk iphoneos clang -fobjc-arc -O2 -isysroot "$SDK" \
+              -target "${ARCH}-apple-ios15.0" -dynamiclib -I. \
+              -framework Foundation -framework UIKit -framework QuartzCore -framework CoreFoundation \
+              -Wl,-undefined,dynamic_lookup \
+              -Wl,-install_name,@loader_path/C18ConnectivityFive.dylib \
+              "${SRC[@]}" -o "build/C18ConnectivityFive-${ARCH}.dylib"
+          done
+          xcrun lipo -create -output build/C18ConnectivityFive.dylib \
+            build/C18ConnectivityFive-arm64.dylib build/C18ConnectivityFive-arm64e.dylib
+          xcrun codesign --force --sign - --timestamp=none build/C18ConnectivityFive.dylib
+          cp build/C18ConnectivityFive.dylib dist/pkg/Library/MobileSubstrate/DynamicLibraries/
+          cp C18ConnectivityFive.plist dist/pkg/Library/MobileSubstrate/DynamicLibraries/
+          xcrun lipo -info build/C18ConnectivityFive.dylib
+      - name: Package deb
+        run: |
+          set -euo pipefail
+          cat > dist/pkg/DEBIAN/control <<'EOF'
+          Package: com.ning.c18connectivityfive
+          Name: C18 Connectivity Five
+          Version: 1.0
+          Architecture: iphoneos-arm64e
+          Description: Custom five-slot ControlCenter18 companion
+          Maintainer: Ning
+          Author: Ning
+          Section: Tweaks
+          Depends: mobilesubstrate, firmware (>= 16.0), firmware (<< 18.0)
+          EOF
+          mkdir -p dist/members
+          printf '2.0\\n' > dist/members/debian-binary
+          tar -C dist/pkg/DEBIAN -czf dist/members/control.tar.gz .
+          tar -C dist/pkg --exclude=./DEBIAN -czf dist/members/data.tar.gz .
+          python3 tools/mkdeb.py dist/com.ning.c18connectivityfive_1.0_iphoneos-arm64e.deb dist/members
+          shasum -a 256 dist/com.ning.c18connectivityfive_1.0_iphoneos-arm64e.deb
+          tar -tzf dist/members/control.tar.gz
+          tar -tzf dist/members/data.tar.gz | head -100
+          python3 - <<'PY'
+          import struct
+          p='build/C18ConnectivityFive.dylib'; d=open(p,'rb').read()
+          assert struct.unpack_from('>I',d,0)[0] == 0xcafebabe
+          n=struct.unpack_from('>I',d,4)[0]
+          subs=[struct.unpack_from('>IIIII',d,8+i*20)[1] for i in range(n)]
+          print('fat_subtypes', [hex(x) for x in subs])
+          assert 0x80000002 in subs
+          ar=open('dist/com.ning.c18connectivityfive_1.0_iphoneos-arm64e.deb','rb').read()
+          assert ar.startswith(b'!<arch>\\n')
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: c18-connectivity-five
+          path: dist/*.deb
+          if-no-files-found: error
