@@ -13,7 +13,7 @@ jobs:
           set -euo pipefail
           xcodebuild -version
           xcrun --sdk iphoneos --show-sdk-version
-      - name: Fetch beta4 baseline
+      - name: Fetch baseline
         run: |
           set -euo pipefail
           mkdir -p dist
@@ -27,14 +27,11 @@ jobs:
           mkdir -p build dist/pkg/Library/MobileSubstrate/DynamicLibraries
           SRC=(Tweak.m C18FiveConfig.m C18FiveModules.m C18FiveEditor.m C18SIMCard.m C18DataSwitch.m C18FiveColumn.m)
           for ARCH in arm64 arm64e; do
-            xcrun --sdk iphoneos clang -fobjc-arc -O2 -isysroot "$SDK" -target "${ARCH}-apple-ios15.0" -dynamiclib -I. \
-              -framework Foundation -framework UIKit -framework QuartzCore -framework CoreFoundation \
-              -Wl,-undefined,dynamic_lookup -Wl,-install_name,@loader_path/C18ConnectivityFive.dylib \
-              "${SRC[@]}" -o "build/C18ConnectivityFive-${ARCH}.dylib"
+            xcrun --sdk iphoneos clang -fobjc-arc -O2 -isysroot "$SDK" -target "${ARCH}-apple-ios15.0" -dynamiclib -I. -framework Foundation -framework UIKit -framework QuartzCore -framework CoreFoundation -Wl,-undefined,dynamic_lookup -Wl,-install_name,@loader_path/C18ConnectivityFive.dylib "${SRC[@]}" -o "build/C18ConnectivityFive-${ARCH}.dylib"
           done
           xcrun lipo -create -output build/C18ConnectivityFive.dylib build/C18ConnectivityFive-arm64.dylib build/C18ConnectivityFive-arm64e.dylib
           xcrun codesign --force --sign - --timestamp=none build/C18ConnectivityFive.dylib
-      - name: Package beta4
+      - name: Package deb
         run: |
           set -euo pipefail
           python3 tools/package_beta4.py
