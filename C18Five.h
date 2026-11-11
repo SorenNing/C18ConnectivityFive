@@ -24,17 +24,11 @@ FOUNDATION_EXPORT void C18FiveInstallEditor(void);
 FOUNDATION_EXPORT void C18FiveInstallModuleHooks(void);
 FOUNDATION_EXPORT void C18FiveModulesSetPresented(BOOL presented);
 FOUNDATION_EXPORT void C18SIMInstallCard(void);
-@interface C18FiveModuleHost : UIView
-@property(nonatomic,copy,readonly) NSString *slotID;
-@property(nonatomic,copy,readonly) NSString *failure;
-@property(nonatomic,strong,readonly) UIView *nativeHost;
-@property(nonatomic,weak) UIView *owner;
-- (instancetype)initWithSlotID:(NSString *)slotID owner:(UIView *)owner;
-- (void)refresh;
-- (void)close;
-- (id)c18ModuleInstance;
+@interface C18FiveModuleHost:UIView
+@property(nonatomic,copy,readonly)NSString*slotID;@property(nonatomic,copy,readonly)NSString*failure;@property(nonatomic,strong,readonly)UIView*nativeHost;@property(nonatomic,weak)UIView*owner;
+- (instancetype)initWithSlotID:(NSString*)slotID owner:(UIView*)owner;- (void)refresh;- (void)close;- (id)c18ModuleInstance;
 @end
-FOUNDATION_EXPORT void C18DataSwitchOpenForHost(C18FiveModuleHost *host);
-FOUNDATION_EXPORT void C18DataSwitchInstallGestures(C18FiveModuleHost *host);
-FOUNDATION_EXPORT void C18DataSwitchRegisterHost(id module,C18FiveModuleHost *host);
+FOUNDATION_EXPORT void C18DataSwitchOpenForHost(C18FiveModuleHost*host);
+FOUNDATION_EXPORT void C18DataSwitchInstallGestures(C18FiveModuleHost*host);
+FOUNDATION_EXPORT void C18DataSwitchRegisterHost(id module,C18FiveModuleHost*host);
 FOUNDATION_EXPORT void C18FiveColumnApply(id shell);
