@@ -13,16 +13,6 @@ jobs:
           set -euo pipefail
           xcodebuild -version
           xcrun --sdk iphoneos --show-sdk-version
-      - name: Decode build resources
-        run: |
-          set -euo pipefail
-          python3 - <<'PY'
-          import base64
-          from pathlib import Path
-          for p in Path('Resources').rglob('*.b64'):
-              out=Path(str(p)[:-4])
-              out.write_bytes(base64.b64decode(p.read_text()))
-          PY
       - name: Fetch beta4 baseline
         run: |
           set -euo pipefail
