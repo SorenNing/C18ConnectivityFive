@@ -13,61 +13,35 @@ jobs:
           set -euo pipefail
           xcodebuild -version
           xcrun --sdk iphoneos --show-sdk-version
+      - name: Fetch beta4 baseline
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          curl -L --fail --retry 3 -o dist/beta4.deb https://sorenning.github.io/debs/roothide/com.evgeniy558.controlcenter18_3.0-beta4_iphoneos-arm64e.deb
+          echo 'e70f6422361b26563c9eff8f55baa6a3bc9fd84e07d76f317a77c08245e860ce  dist/beta4.deb' | shasum -a 256 -c -
+          python3 tools/extract_deb.py dist/beta4.deb dist/base
       - name: Build dylib
         run: |
           set -euo pipefail
           SDK="$(xcrun --sdk iphoneos --show-sdk-path)"
-          mkdir -p build dist/pkg/DEBIAN dist/pkg/Library/MobileSubstrate/DynamicLibraries
-          SRC=(Tweak.m C18FiveConfig.m C18FiveModules.m C18FivePrefs.m)
+          mkdir -p build dist/pkg/Library/MobileSubstrate/DynamicLibraries
+          SRC=(Tweak.m C18FiveConfig.m C18FiveModules.m C18FiveEditor.m C18SIMCard.m C18DataSwitch.m C18FiveColumn.m)
           for ARCH in arm64 arm64e; do
-            xcrun --sdk iphoneos clang -fobjc-arc -O2 -isysroot "$SDK" \
-              -target "${ARCH}-apple-ios15.0" -dynamiclib -I. \
+            xcrun --sdk iphoneos clang -fobjc-arc -O2 -isysroot "$SDK" -target "${ARCH}-apple-ios15.0" -dynamiclib -I. \
               -framework Foundation -framework UIKit -framework QuartzCore -framework CoreFoundation \
-              -Wl,-undefined,dynamic_lookup \
-              -Wl,-install_name,@loader_path/C18ConnectivityFive.dylib \
+              -Wl,-undefined,dynamic_lookup -Wl,-install_name,@loader_path/C18ConnectivityFive.dylib \
               "${SRC[@]}" -o "build/C18ConnectivityFive-${ARCH}.dylib"
           done
-          xcrun lipo -create -output build/C18ConnectivityFive.dylib \
-            build/C18ConnectivityFive-arm64.dylib build/C18ConnectivityFive-arm64e.dylib
+          xcrun lipo -create -output build/C18ConnectivityFive.dylib build/C18ConnectivityFive-arm64.dylib build/C18ConnectivityFive-arm64e.dylib
           xcrun codesign --force --sign - --timestamp=none build/C18ConnectivityFive.dylib
-          cp build/C18ConnectivityFive.dylib dist/pkg/Library/MobileSubstrate/DynamicLibraries/
-          cp C18ConnectivityFive.plist dist/pkg/Library/MobileSubstrate/DynamicLibraries/
-          xcrun lipo -info build/C18ConnectivityFive.dylib
-      - name: Package deb
+      - name: Package beta4
         run: |
           set -euo pipefail
-          cat > dist/pkg/DEBIAN/control <<'EOF'
-          Package: com.ning.c18connectivityfive
-          Name: C18 Connectivity Five
-          Version: 1.0
-          Architecture: iphoneos-arm64e
-          Description: Custom five-slot ControlCenter18 companion
-          Maintainer: Ning
-          Author: Ning
-          Section: Tweaks
-          Depends: mobilesubstrate, firmware (>= 16.0), firmware (<< 18.0)
-          EOF
-          mkdir -p dist/members
-          printf '2.0\\n' > dist/members/debian-binary
-          tar -C dist/pkg/DEBIAN -czf dist/members/control.tar.gz .
-          tar -C dist/pkg --exclude=./DEBIAN -czf dist/members/data.tar.gz .
-          python3 tools/mkdeb.py dist/com.ning.c18connectivityfive_1.0_iphoneos-arm64e.deb dist/members
-          shasum -a 256 dist/com.ning.c18connectivityfive_1.0_iphoneos-arm64e.deb
-          tar -tzf dist/members/control.tar.gz
-          tar -tzf dist/members/data.tar.gz | head -100
-          python3 - <<'PY'
-          import struct
-          p='build/C18ConnectivityFive.dylib'; d=open(p,'rb').read()
-          assert struct.unpack_from('>I',d,0)[0] == 0xcafebabe
-          n=struct.unpack_from('>I',d,4)[0]
-          subs=[struct.unpack_from('>IIIII',d,8+i*20)[1] for i in range(n)]
-          print('fat_subtypes', [hex(x) for x in subs])
-          assert 0x80000002 in subs
-          ar=open('dist/com.ning.c18connectivityfive_1.0_iphoneos-arm64e.deb','rb').read()
-          assert ar.startswith(b'!<arch>\\n')
-          PY
+          python3 tools/package_beta4.py
+          shasum -a 256 dist/*.deb
+          python3 tools/verify_beta4.py dist/com.evgeniy558.controlcenter18_3.0-beta4-five4_iphoneos-arm64e.deb
       - uses: actions/upload-artifact@v4
         with:
-          name: c18-connectivity-five
+          name: controlcenter18-beta4-all-items
           path: dist/*.deb
           if-no-files-found: error
