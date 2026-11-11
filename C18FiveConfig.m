@@ -1,150 +1,16 @@
 #import "C18Five.h"
 #import <CoreFoundation/CoreFoundation.h>
-
+#import <mach-o/dyld.h>
+#import <dlfcn.h>
 NSString * const C18FiveDomain = @"com.ning.c18connectivity";
 const char * const C18FiveReload = "com.ning.c18connectivity.reload";
 static NSString * const kNames[7] = {@"飞行模式",@"隔空投送",@"Wi-Fi",@"蜂窝数据",@"蓝牙",@"个人热点",@"VPN"};
-NSString *C18FiveBuiltinID(NSInteger i) { return i>=0 && i<7 ? [NSString stringWithFormat:@"builtin:%ld",(long)i] : nil; }
-NSInteger C18FiveBuiltinIndex(NSString *s) {
-    if (![s isKindOfClass:NSString.class]) return NSNotFound;
-    for (NSInteger i=0;i<7;i++) if ([s isEqualToString:C18FiveBuiltinID(i)]) return i;
-    return NSNotFound;
-}
-NSString *C18FiveModuleID(NSString *s) {
-    return [s hasPrefix:@"module:"] && s.length>7 ? [s substringFromIndex:7] : nil;
-}
-NSArray *C18FiveDefaultSlots(void) { return @[@"builtin:4",@"builtin:2",@"builtin:3",@"builtin:1",@"builtin:0"]; }
-id C18FiveGet(id object, NSString *key) {
-    @try { return object ? [object valueForKey:key] : nil; } @catch(NSException *e) { return nil; }
-}
-id C18FiveObject(id object, SEL sel) {
-    if (!object || ![object respondsToSelector:sel]) return nil;
-    NSMethodSignature *sig=[object methodSignatureForSelector:sel];
-    const char *t=sig.methodReturnType;
-    if (!t || (*t!='@' && *t!='#')) return nil;
-    return ((id(*)(id,SEL))objc_msgSend)(object,sel);
-}
-BOOL C18FiveBool(id object, SEL sel) {
-    if (!object || ![object respondsToSelector:sel]) return NO;
-    const char *t=[object methodSignatureForSelector:sel].methodReturnType;
-    if (!t || (*t!='B' && *t!='c')) return NO;
-    return ((BOOL(*)(id,SEL))objc_msgSend)(object,sel);
-}
-void C18FiveVoid(id object, SEL sel) {
-    if (!object || ![object respondsToSelector:sel]) return;
-    const char *t=[object methodSignatureForSelector:sel].methodReturnType;
-    if (t && *t=='v') ((void(*)(id,SEL))objc_msgSend)(object,sel);
-}
-void C18FiveSetInteger(id object, SEL sel, NSInteger v) {
-    if (!object || ![object respondsToSelector:sel]) return;
-    NSMethodSignature *sig=[object methodSignatureForSelector:sel];
-    if (sig.numberOfArguments!=3) return;
-    const char *t=[sig getArgumentTypeAtIndex:2];
-    if (*t=='q') ((void(*)(id,SEL,NSInteger))objc_msgSend)(object,sel,v);
-}
-static BOOL C18FiveValid(NSInteger mode, NSArray *slots) {
-    if (mode!=0 && mode!=4 && mode!=5) return NO;
-    if (![slots isKindOfClass:NSArray.class] || slots.count!=5) return NO;
-    NSMutableSet *seen=[NSMutableSet set];
-    for (id slot in slots) {
-        if (![slot isKindOfClass:NSString.class] || [seen containsObject:slot]) return NO;
-        if (C18FiveBuiltinIndex(slot)==NSNotFound && !C18FiveModuleID(slot)) return NO;
-        [seen addObject:slot];
-    }
-    return YES;
-}
-BOOL C18FiveRead(NSInteger *mode, NSArray **slots) {
-    CFPreferencesAppSynchronize((__bridge CFStringRef)C18FiveDomain);
-    id saved=CFBridgingRelease(CFPreferencesCopyAppValue(CFSTR("Configuration"),(__bridge CFStringRef)C18FiveDomain));
-    NSInteger m=0; NSArray *s=C18FiveDefaultSlots();
-    if ([saved isKindOfClass:NSDictionary.class]) {
-        id value=saved[@"mode"]; id items=saved[@"slots"];
-        if (![value respondsToSelector:@selector(integerValue)] || !C18FiveValid([value integerValue],items)) {
-            if (mode) *mode=0; if (slots) *slots=s; return NO;
-        }
-        m=[value integerValue]; s=[items copy];
-    } else if (!saved) {
-        // Migrate the initial seven-item integer draft without rewriting its file.
-        id old=CFBridgingRelease(CFPreferencesCopyAppValue(CFSTR("Mode"),(__bridge CFStringRef)C18FiveDomain));
-        if ([old respondsToSelector:@selector(integerValue)]) {
-            m=[old integerValue]; NSMutableArray *converted=[s mutableCopy];
-            for (NSInteger i=0;i<5;i++) {
-                NSString *key=[NSString stringWithFormat:@"Slot%ld",(long)(i+1)];
-                id v=CFBridgingRelease(CFPreferencesCopyAppValue((__bridge CFStringRef)key,(__bridge CFStringRef)C18FiveDomain));
-                if (v && [v respondsToSelector:@selector(integerValue)]) {
-                    NSString *slot=C18FiveBuiltinID([v integerValue]);
-                    if (!slot) { m=0; break; }
-                    converted[i]=slot;
-                }
-            }
-            if (C18FiveValid(m,converted)) s=[converted copy]; else m=0;
-        }
-    }
-    if (mode) *mode=m; if (slots) *slots=s;
-    return YES;
-}
-BOOL C18FiveWrite(NSInteger mode, NSArray *slots) {
-    if (!C18FiveValid(mode,slots)) return NO;
-    NSDictionary *value=@{@"mode":@(mode),@"slots":[slots copy],@"version":@2};
-    CFPreferencesSetAppValue(CFSTR("Configuration"),(__bridge CFPropertyListRef)value,(__bridge CFStringRef)C18FiveDomain);
-    BOOL ok=CFPreferencesAppSynchronize((__bridge CFStringRef)C18FiveDomain);
-    if (ok) notify_post(C18FiveReload);
-    return ok;
-}
-BOOL C18FiveExcluded(NSString *identifier, NSString *principal) {
-    NSString *s=[[NSString stringWithFormat:@"%@ %@",identifier?:@"",principal?:@""] lowercaseString];
-    // No slider, player, live statistics, grouped panel, or configurable custom card.
-    NSArray *blocked=@[@"displaymodule",@"tinydisplay",@"tinymediaaudio",@"controlcenter.audio",@"nowplaying",@"mediacontrol",@"volumemodule",@"brightnessmodule",@"uptime",@"cpumagic",@"caperfhud",@"connectivity",@"focusuimodule",@"home.compact",@"homecontrol",@"text-size",@"hearing"];
-    for (NSString *part in blocked) if ([s containsString:part]) return YES;
-    return NO;
-}
-static NSDictionary *C18FiveBundleEntry(NSString *path, NSString *group) {
-    NSDictionary *info=[NSDictionary dictionaryWithContentsOfFile:[path stringByAppendingPathComponent:@"Info.plist"]];
-    NSString *bid=info[@"CFBundleIdentifier"], *principal=info[@"NSPrincipalClass"];
-    if (![bid isKindOfClass:NSString.class] || !bid.length || C18FiveExcluded(bid,principal)) return nil;
-    if ([info[@"UIDeviceFamily"] isKindOfClass:NSArray.class] && ![info[@"UIDeviceFamily"] containsObject:@1]) return nil;
-    NSBundle *bundle=[NSBundle bundleWithPath:path];
-    NSString *title=bundle.localizedInfoDictionary[@"CFBundleDisplayName"] ?: bundle.localizedInfoDictionary[@"CFBundleName"];
-    if (!title.length) title=info[@"CFBundleDisplayName"] ?: info[@"CFBundleName"] ?: bid;
-    return @{@"id":[@"module:" stringByAppendingString:bid],@"identifier":bid,@"title":title,@"group":group,@"path":path,@"principal":principal?:@""};
-}
-NSArray<NSDictionary *> *C18FiveCatalog(void) {
-    NSMutableArray *result=[NSMutableArray array]; NSMutableSet *seen=[NSMutableSet set];
-    for (NSInteger i=0;i<7;i++) {
-        NSDictionary *e=@{@"id":C18FiveBuiltinID(i),@"title":kNames[i],@"group":@"连接功能"};
-        [result addObject:e]; [seen addObject:e[@"id"]];
-    }
-    NSMutableArray *roots=[NSMutableArray arrayWithObjects:@[@"/Library/ControlCenter/Bundles",@"CC+"],@[@"/Library/ControlCenter18/Bundles",@"自带功能"],@[@"/var/jb/Library/ControlCenter/Bundles",@"CC+"],@[@"/var/jb/Library/ControlCenter18/Bundles",@"自带功能"],@[@"/System/Library/ControlCenter/Bundles",@"系统功能"],nil];
-    // Derive RootHide's real prefix from the already-loaded shipping dylib/bundle.
-    NSMutableArray *loaded=[NSMutableArray arrayWithArray:NSBundle.allBundles]; [loaded addObjectsFromArray:NSBundle.allFrameworks];
-    for (NSBundle *bundle in loaded) {
-        NSString *path=bundle.bundlePath; NSRange r=[path rangeOfString:@"/Library/PreferenceBundles/ControlCenter18Prefs.bundle"];
-        if (r.location!=NSNotFound) {
-            NSString *prefix=[path substringToIndex:r.location];
-            [roots addObject:@[[prefix stringByAppendingString:@"/Library/ControlCenter/Bundles"],@"CC+"]];
-            [roots addObject:@[[prefix stringByAppendingString:@"/Library/ControlCenter18/Bundles"],@"自带功能"]];
-        }
-    }
-    Class c=objc_getClass("C18ConnectivityView"); const char *image=c ? class_getImageName(c) : NULL;
-    if (image) {
-        NSString *path=@(image); NSRange r=[path rangeOfString:@"/Library/MobileSubstrate/"];
-        if (r.location!=NSNotFound) {
-            NSString *prefix=[path substringToIndex:r.location];
-            [roots addObject:@[[prefix stringByAppendingString:@"/Library/ControlCenter/Bundles"],@"CC+"]];
-            [roots addObject:@[[prefix stringByAppendingString:@"/Library/ControlCenter18/Bundles"],@"自带功能"]];
-        }
-    }
-    for (NSArray *root in roots) {
-        NSArray *names=[[NSFileManager.defaultManager contentsOfDirectoryAtPath:root[0] error:NULL] sortedArrayUsingSelector:@selector(localizedStandardCompare:)];
-        for (NSString *name in names) {
-            if (![name.pathExtension isEqualToString:@"bundle"]) continue;
-            NSDictionary *e=C18FiveBundleEntry([root[0] stringByAppendingPathComponent:name],root[1]);
-            if (e && ![seen containsObject:e[@"id"]]) { [seen addObject:e[@"id"]]; [result addObject:e]; }
-        }
-    }
-    return result;
-}
-NSDictionary *C18FiveEntry(NSString *slotID) {
-    for (NSDictionary *entry in C18FiveCatalog()) if ([entry[@"id"] isEqual:slotID]) return entry;
-    return nil;
-}
+static NSString *C18FiveChineseTitle(NSString *identifier,NSString *fallback){NSDictionary*n=@{@"com.apple.control-center.AirDropModule":@"隔空投送",@"com.apple.control-center.BluetoothModule":@"蓝牙",@"com.evgeniy558.controlcenter18.connectivity2":@"连接中心",@"com.apple.shortcuts.OpenAppControl":@"打开 App",@"com.apple.WiFiKit.PersonalHotspotControl":@"个人热点",@"com.apple.shortcuts.ShortcutsControl":@"快捷指令",@"com.apple.coretelephony.ToggleAirplaneMode":@"飞行模式",@"com.apple.coretelephony.ToggleCellularData":@"蜂窝数据",@"com.apple.Translate.TranslationLiveActivityControl":@"翻译",@"com.apple.control-center.VPNModule":@"VPN",@"com.apple.control-center.WiFiModule":@"Wi-Fi",@"netskao.alipayscan":@"支付宝扫码",@"com.kdt.caperfhudcc":@"实时帧率",@"com.skypain.ccautobrightness":@"自动亮度",@"netskao.ccbadgeclear":@"清理角标",@"netskao.cccellularratemodule":@"蜂窝网络速率",@"netskao.ccsim":@"蜂窝管理",@"netskao.ccswitchdatamodule":@"数据切换",@"com.skypain.cclocation":@"定位",@"com.skypain.cclockscreen":@"锁屏",@"com.skypain.ccrespring":@"注销",@"com.skypain.ccscreenshot":@"截屏",@"com.skypain.ccsettrings":@"CC 设置",@"com.skypain.ccvpn":@"CC VPN",@"com.KingPuffaddi.control-center.CCVibration":@"振动",@"com.jailbreak365.control-center.MuteModuleCC":@"静音",@"netskao.quantumultxlauncher":@"Quantumult X",@"netskao.tinydisplaymodule":@"迷你亮度",@"netskao.tinymediaaudiomodule":@"迷你音量",@"com.mtac.uptimemodule":@"开机计时",@"com.sop.cpumagicrootless":@"实时 CPU",@"com.zqbb.qswx":@"微信付款码",@"com.zqbb.qszfb":@"支付宝付款码",@"netskao.wechatscan":@"微信扫码",@"com.jailbreak365.control-center.FilzaModule":@"打开 Filza",@"com.jailbreak365.control-center.SafariModule":@"打开 Safari",@"com.jailbreak365.control-center.SileoModule":@"打开 Sileo",@"com.jailbreak365.control-center.TelegramModule":@"打开 Telegram",@"com.jailbreak365.control-center.TwitterModule":@"打开 Twitter",@"com.jailbreak365.control-center.YouTubeModule":@"打开 YouTube"};return n[identifier]?:fallback.length?fallback:@"其他模块";}
+NSString *C18FiveBuiltinID(NSInteger i){return i>=0&&i<7?[NSString stringWithFormat:@"builtin:%ld",(long)i]:nil;} NSInteger C18FiveBuiltinIndex(NSString*s){if(![s isKindOfClass:NSString.class])return NSNotFound;for(NSInteger i=0;i<7;i++)if([s isEqualToString:C18FiveBuiltinID(i)])return i;return NSNotFound;} NSString*C18FiveModuleID(NSString*s){return [s hasPrefix:@"module:"]&&s.length>7?[s substringFromIndex:7]:nil;} NSArray*C18FiveDefaultSlots(void){return @[@"builtin:4",@"builtin:2",@"builtin:3",@"builtin:1",@"builtin:0"];}
+id C18FiveGet(id o,NSString*k){@try{return o?[o valueForKey:k]:nil;}@catch(NSException*e){return nil;}} id C18FiveObject(id o,SEL s){if(!o||![o respondsToSelector:s])return nil;const char*t=[o methodSignatureForSelector:s].methodReturnType;return t&&(*t=='@'||*t=='#')?((id(*)(id,SEL))objc_msgSend)(o,s):nil;} BOOL C18FiveBool(id o,SEL s){if(!o||![o respondsToSelector:s])return NO;const char*t=[o methodSignatureForSelector:s].methodReturnType;return t&&(*t=='B'||*t=='c')?((BOOL(*)(id,SEL))objc_msgSend)(o,s):NO;} void C18FiveVoid(id o,SEL s){if(o&&[o respondsToSelector:s]&&[o methodSignatureForSelector:s].methodReturnType[0]=='v')((void(*)(id,SEL))objc_msgSend)(o,s);} void C18FiveSetInteger(id o,SEL s,NSInteger v){if(o&&[o respondsToSelector:s])((void(*)(id,SEL,NSInteger))objc_msgSend)(o,s,v);}
+static BOOL Valid(NSInteger m,NSArray*s){if(m!=0&&m!=4&&m!=5)return NO;if(![s isKindOfClass:NSArray.class]||s.count!=5)return NO;NSMutableSet*x=[NSMutableSet set];for(id v in s){if(![v isKindOfClass:NSString.class]||[x containsObject:v]||(C18FiveBuiltinIndex(v)==NSNotFound&&!C18FiveModuleID(v)))return NO;[x addObject:v];}return YES;}
+BOOL C18FiveRead(NSInteger*m,NSArray**slots){id d=CFBridgingRelease(CFPreferencesCopyAppValue(CFSTR("Configuration"),(__bridge CFStringRef)C18FiveDomain));NSInteger mode=0;NSArray*s=C18FiveDefaultSlots();if([d isKindOfClass:NSDictionary.class]&&Valid([d[@"mode"] integerValue],d[@"slots"])){mode=[d[@"mode"] integerValue];s=[d[@"slots"] copy];}if(m)*m=mode;if(slots)*slots=s;return YES;} BOOL C18FiveWrite(NSInteger m,NSArray*s){if(!Valid(m,s))return NO;CFPreferencesSetAppValue(CFSTR("Configuration"),(__bridge CFPropertyListRef)@{@"mode":@(m),@"slots":s},(__bridge CFStringRef)C18FiveDomain);BOOL ok=CFPreferencesAppSynchronize((__bridge CFStringRef)C18FiveDomain);if(ok)notify_post(C18FiveReload);return ok;}
+BOOL C18FiveExcluded(NSString*i,NSString*p){NSString*s=[NSString stringWithFormat:@"%@ %@",i?:@"",p?:@""].lowercaseString;for(NSString*x in @[@"displaymodule",@"tinydisplay",@"tinymediaaudio",@"nowplaying",@"brightnessmodule",@"uptime",@"cpumagic",@"caperfhud",@"connectivity",@"focusuimodule",@"homecontrol",@"hearing"])if([s containsString:x])return YES;return NO;}
+static void AddRoots(NSMutableArray*r,NSString*p){for(NSArray*x in @[@[@"/Library/ControlCenter/Bundles",@"CC+"],@[@"/Library/ControlCenter18/Bundles",@"系统模块"]]){NSArray*v=@[[p stringByAppendingString:x[0]],x[1]];if(![r containsObject:v])[r addObject:v];}}
+NSArray<NSDictionary*>*C18FiveCatalog(void){NSMutableArray*r=[NSMutableArray array],*a=[NSMutableArray array];NSMutableSet*seen=[NSMutableSet set];for(int i=0;i<7;i++){NSDictionary*e=@{@"id":C18FiveBuiltinID(i),@"title":kNames[i],@"group":@"连接功能"};[a addObject:e];[seen addObject:e[@"id"]];}AddRoots(r,@"");AddRoots(r,@"/var/jb");[r addObject:@[@"/System/Library/ControlCenter/Bundles",@"系统模块"]];for(NSArray*root in r){for(NSString*n in [[NSFileManager.defaultManager contentsOfDirectoryAtPath:root[0] error:0] sortedArrayUsingSelector:@selector(localizedStandardCompare:)]){if(![n.pathExtension isEqualToString:@"bundle"])continue;NSString*p=[root[0] stringByAppendingPathComponent:n];NSDictionary*i=[NSDictionary dictionaryWithContentsOfFile:[p stringByAppendingPathComponent:@"Info.plist"]];NSString*bid=i[@"CFBundleIdentifier"];if(!bid.length||C18FiveExcluded(bid,i[@"NSPrincipalClass"]))continue;NSDictionary*e=@{@"id":[@"module:" stringByAppendingString:bid],@"identifier":bid,@"title":C18FiveChineseTitle(bid,i[@"CFBundleDisplayName"]?:bid),@"group":root[1],@"path":p,@"principal":i[@"NSPrincipalClass"]?:@""};if(![seen containsObject:e[@"id"]]){[seen addObject:e[@"id"]];[a addObject:e];}}}return a;}
+NSDictionary*C18FiveEntry(NSString*s){for(NSDictionary*e in C18FiveCatalog())if([e[@"id"] isEqual:s])return e;return nil;}
