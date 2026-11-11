@@ -1,150 +1,19 @@
 #import "C18Five.h"
 #import "C18ConnectivityModel.h"
 #import <QuartzCore/QuartzCore.h>
-#import <mach-o/dyld.h>
-
 extern void MSHookMessageEx(Class,SEL,IMP,IMP *);
-static char kC18State;
-static NSHashTable<UIView *> *gViews;
-static NSInteger gMode;
-static NSArray<NSString *> *gSlots;
-static BOOL gConfigLoaded, gInstalled;
-static NSUInteger gDepth;
-static int gReloadToken;
-static void C18ReloadConfig(void);
-static void (*oLayout)(id,SEL), (*oRoles)(id,SEL), (*oAlphas)(id,SEL);
-static void (*oGrid)(id,SEL,long long), (*oExpanded)(id,SEL,BOOL);
-static void (*oRefresh)(id,SEL,BOOL), (*oWindow)(id,SEL);
-static BOOL (*oCanExpand)(id,SEL), (*oShouldExpand)(id,SEL,CGPoint);
-static void (*oDidPresent)(id,SEL), (*oDidDismiss)(id,SEL);
-
-@interface C18FiveState : NSObject
-@property(nonatomic,strong) NSMutableDictionary<NSString *,C18FiveModuleHost *> *hosts;
-@property(nonatomic,strong) NSArray<NSDictionary *> *saved;
-@property(nonatomic) BOOL applied;
-@end
-@implementation C18FiveState
-- (instancetype)init { if ((self=[super init])) _hosts=[NSMutableDictionary dictionary]; return self; }
-@end
-static C18FiveState *State(UIView *view, BOOL create) {
-    C18FiveState *state=objc_getAssociatedObject(view,&kC18State);
-    if (!state && create) { state=[C18FiveState new]; objc_setAssociatedObject(view,&kC18State,state,OBJC_ASSOCIATION_RETAIN_NONATOMIC); }
-    return state;
-}
-static BOOL Parts(id view, NSArray **buttons, NSArray **tiles, UIView **cluster) {
-    id b=C18FiveGet(view,@"_buttons"), t=C18FiveGet(view,@"_tiles"), c=C18FiveGet(view,@"_cluster");
-    if (![b isKindOfClass:NSArray.class] || [b count]!=7 || ![t isKindOfClass:NSArray.class] || [t count]!=7 || ![c isKindOfClass:UIView.class]) return NO;
-    for (NSInteger i=0;i<7;i++) {
-        if (![b[i] isKindOfClass:UIControl.class] || [b[i] tag]!=i || ![t[i] isKindOfClass:UIView.class]) return NO;
-    }
-    if (buttons) *buttons=b; if (tiles) *tiles=t; if (cluster) *cluster=c; return YES;
-}
-static BOOL Eligible(UIView *view) {
-    C18Position p[7];
-    return gMode && !C18FiveBool(view,NSSelectorFromString(@"isExpanded")) &&
-        !C18FiveBool(view,NSSelectorFromString(@"isImplicitlyExpanded")) &&
-        C18CalculatePositions((int)gMode,view.bounds.size.width,view.bounds.size.height,p)>0 && Parts(view,NULL,NULL,NULL);
-}
-static void Restore(UIView *view, BOOL removeHosts) {
-    C18FiveState *state=State(view,NO); if (!state) return;
-    if (state.applied) {
-        state.applied=NO;
-        for (NSDictionary *d in state.saved) {
-            UIView *v=d[@"view"]; v.hidden=[d[@"hidden"] boolValue]; v.alpha=[d[@"alpha"] doubleValue];
-            v.userInteractionEnabled=[d[@"interaction"] boolValue]; v.frame=[d[@"frame"] CGRectValue];
-            if (d[@"glyph"]) ((void(*)(id,SEL,double))objc_msgSend)(v,NSSelectorFromString(@"setGlyphScale:"),[d[@"glyph"] doubleValue]);
-        }
-        state.saved=nil;
-    }
-    for (C18FiveModuleHost *host in state.hosts.allValues) host.hidden=YES;
-    if (removeHosts) { for (C18FiveModuleHost *host in state.hosts.allValues) [host close]; [state.hosts removeAllObjects]; }
-}
-static void C18ReloadConfig(void) {
-    NSArray *slots=nil; NSInteger mode=0;
-    if (C18FiveRead(&mode,&slots)) { gMode=mode; gSlots=[slots copy]; }
-    gConfigLoaded=YES;
-}
-static void LoadConfig(void) { C18ReloadConfig(); }
-static void Apply(UIView *view) {
-    if (!gConfigLoaded) LoadConfig();
-    if (!Eligible(view)) { Restore(view,gMode==0); return; }
-    NSArray *buttons,*tiles; UIView *cluster;
-    if (!Parts(view,&buttons,&tiles,&cluster)) return;
-    C18FiveState *state=State(view,YES);
-    if (state.applied) return;
-    NSMutableArray *objects=[NSMutableArray arrayWithArray:buttons]; [objects addObjectsFromArray:tiles]; [objects addObject:cluster];
-    UIView *material=C18FiveGet(view,@"_backgroundMaterial"); if ([material isKindOfClass:UIView.class]) [objects addObject:material];
-    NSMutableArray *saved=[NSMutableArray array];
-    for (UIView *v in objects) {
-        NSMutableDictionary *d=[@{@"view":v,@"hidden":@(v.hidden),@"alpha":@(v.alpha),@"interaction":@(v.userInteractionEnabled),@"frame":[NSValue valueWithCGRect:v.frame]} mutableCopy];
-        if ([v respondsToSelector:NSSelectorFromString(@"glyphScale")]) d[@"glyph"]=C18FiveGet(v,@"glyphScale")?:@1;
-        [saved addObject:d];
-    }
-    state.saved=saved; state.applied=YES;
-    cluster.frame=view.bounds; cluster.hidden=NO; cluster.alpha=1; cluster.userInteractionEnabled=YES;
-    material.alpha=1;
-    for (UIView *v in tiles) { v.hidden=YES; v.userInteractionEnabled=NO; }
-    for (UIControl *v in buttons) { v.hidden=YES; v.userInteractionEnabled=NO; }
-    C18Position p[7]; int count=C18CalculatePositions((int)gMode,view.bounds.size.width,view.bounds.size.height,p);
-    NSMutableArray<NSString *> *items=[[gSlots subarrayWithRange:NSMakeRange(0,gMode)] mutableCopy];
-    if (gMode==4) {
-        // Keep the right-hand auxiliary region, populated with remaining connection controls.
-        for (NSInteger i=0;i<7 && items.count<7;i++) { NSString *s=C18FiveBuiltinID(i); if (![items containsObject:s]) [items addObject:s]; }
-    }
-    NSSet *wanted=[NSSet setWithArray:[items filteredArrayUsingPredicate:[NSPredicate predicateWithBlock:^BOOL(NSString *s, NSDictionary *b){return C18FiveModuleID(s)!=nil;}]]];
-    for (NSString *key in state.hosts.allKeys) if (![wanted containsObject:key]) { [state.hosts[key] close]; [state.hosts removeObjectForKey:key]; }
-    for (int i=0;i<count;i++) {
-        NSString *slot=items[i]; NSInteger item=C18FiveBuiltinIndex(slot);
-        UIView *v;
-        if (item!=NSNotFound) {
-            v=buttons[item];
-            double scale=item==3 ? 1.25 : 1.0;
-            if (!p[i].primary) scale*=0.45;
-            if ([v respondsToSelector:NSSelectorFromString(@"setGlyphScale:")]) ((void(*)(id,SEL,double))objc_msgSend)(v,NSSelectorFromString(@"setGlyphScale:"),scale);
-        } else {
-            C18FiveModuleHost *host=state.hosts[slot];
-            if (!host) { host=[[C18FiveModuleHost alloc] initWithSlotID:slot owner:view]; state.hosts[slot]=host; [cluster addSubview:host]; }
-            v=host;
-        }
-        v.frame=CGRectMake(p[i].x,p[i].y,p[i].side,p[i].side); v.hidden=NO; v.alpha=1; v.userInteractionEnabled=YES;
-        [v setNeedsLayout];
-    }
-}
-static void C18ApplyAll(void) {
-    for (UIView *v in gViews.allObjects) { [v setNeedsLayout]; [v layoutIfNeeded]; }
-}
-static void C18LayoutHook(id self, SEL cmd) {
-    if (gDepth++ > 2) { gDepth--; return; }
-    if (oLayout) oLayout(self,cmd);
-    Apply(self); if (gViews) [gViews addObject:self];
-    gDepth--;
-}
-static void C18RolesHook(id self, SEL cmd) { if (oRoles) oRoles(self,cmd); Apply(self); }
-static void C18AlphasHook(id self, SEL cmd) { if (oAlphas) oAlphas(self,cmd); Apply(self); }
-static void C18GridHook(id self, SEL cmd, long long size) { if (oGrid) oGrid(self,cmd,size); Apply(self); }
-static void C18ExpandedHook(id self, SEL cmd, BOOL value) { if (oExpanded) oExpanded(self,cmd,value); Apply(self); }
-static void C18WindowHook(id self, SEL cmd) { if (oWindow) oWindow(self,cmd); Apply(self); }
-static BOOL C18CanExpandHook(id self, SEL cmd) { if (gMode==5 && Eligible(self)) return NO; return oCanExpand ? oCanExpand(self,cmd) : NO; }
-static BOOL C18ShouldExpandHook(id self, SEL cmd, CGPoint point) { if (gMode==5 && Eligible(self)) return NO; return oShouldExpand ? oShouldExpand(self,cmd,point) : NO; }
-static void C18ReloadNotify(int token) { C18ReloadConfig(); C18ApplyAll(); }
-static void C18InstallViewHooks(void) {
-    if (gInstalled) return;
-    Class cls=objc_getClass("C18ConnectivityView"); if (!cls) return;
-    gInstalled=YES; gViews=[NSHashTable weakObjectsHashTable]; C18ReloadConfig();
-    MSHookMessageEx(cls,@selector(layoutSubviews),(IMP)C18LayoutHook,(IMP*)&oLayout);
-    MSHookMessageEx(cls,@selector(_applyButtonRoles),(IMP)C18RolesHook,(IMP*)&oRoles);
-    MSHookMessageEx(cls,@selector(_applyLayoutAlphas),(IMP)C18AlphasHook,(IMP*)&oAlphas);
-    MSHookMessageEx(cls,@selector(setGridSize:),(IMP)C18GridHook,(IMP*)&oGrid);
-    MSHookMessageEx(cls,@selector(setExpanded:),(IMP)C18ExpandedHook,(IMP*)&oExpanded);
-    MSHookMessageEx(cls,@selector(didMoveToWindow),(IMP)C18WindowHook,(IMP*)&oWindow);
-    MSHookMessageEx(cls,@selector(canExpand),(IMP)C18CanExpandHook,(IMP*)&oCanExpand);
-    MSHookMessageEx(cls,@selector(shouldExpandOnTouchAtPoint:),(IMP)C18ShouldExpandHook,(IMP*)&oShouldExpand);
-    notify_register_dispatch(C18FiveReload,&gReloadToken,dispatch_get_main_queue(),^(int t){C18ReloadConfig();C18ApplyAll();});
-    C18FiveInstallModuleHooks();
-}
-__attribute__((constructor)) static void C18FiveInit(void) {
-    dispatch_async(dispatch_get_main_queue(),^{ C18InstallViewHooks(); });
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW,1*NSEC_PER_SEC),dispatch_get_main_queue(),^{ C18InstallViewHooks(); });
-    C18FiveInstallPreferences();
-}
-__attribute__((constructor)) static void C18FivePrefsInit(void) { C18FiveInstallPreferences(); }
+static char kState;static NSHashTable*gViews;static NSInteger gMode;static NSArray*gSlots;static BOOL gLoaded,gInstalled,gShellLayout,gShellPresent,gShellDismiss;static int gAttempts;static NSUInteger gDepth;static int gReload;static void(*oLayout)(id,SEL),(*oRoles)(id,SEL),(*oAlphas)(id,SEL),(*oWindow)(id,SEL);static void(*oGrid)(id,SEL,long long),(*oExpanded)(id,SEL,BOOL),(*oShellLayout)(id,SEL),(*oShellPresent)(id,SEL),(*oShellDismiss)(id,SEL);static BOOL(*oCanExpand)(id,SEL),(*oShouldExpand)(id,SEL,CGPoint);
+@interface C18FiveState:NSObject@property(nonatomic,strong)NSMutableDictionary*hosts;@property(nonatomic,strong)NSArray*saved;@property(nonatomic)BOOL applied;@end
+@implementation C18FiveState- (instancetype)init{if((self=[super init]))_hosts=[NSMutableDictionary dictionary];return self;}@end
+static C18FiveState*State(UIView*v,BOOL c){C18FiveState*s=objc_getAssociatedObject(v,&kState);if(!s&&c){s=[C18FiveState new];objc_setAssociatedObject(v,&kState,s,OBJC_ASSOCIATION_RETAIN_NONATOMIC);}return s;}
+static BOOL Parts(id v,NSArray**b,NSArray**t,UIView**c){id x=C18FiveGet(v,@"_buttons"),y=C18FiveGet(v,@"_tiles"),z=C18FiveGet(v,@"_cluster");if(![x isKindOfClass:NSArray.class]||x.count!=7||![y isKindOfClass:NSArray.class]||y.count!=7||![z isKindOfClass:UIView.class])return NO;if(b)*b=x;if(t)*t=y;if(c)*c=z;return YES;}
+static BOOL Eligible(UIView*v){C18Position p[7];return gMode&&!C18FiveBool(v,NSSelectorFromString(@"isExpanded"))&&C18CalculatePositions((int)gMode,v.bounds.size.width,v.bounds.size.height,p)>0&&Parts(v,0,0,0);}
+static void Restore(UIView*v,BOOL remove){C18FiveState*s=State(v,NO);if(!s)return;if(s.applied){s.applied=NO;for(NSDictionary*d in s.saved){UIView*x=d[@"view"];x.hidden=[d[@"hidden"]boolValue];x.alpha=[d[@"alpha"]doubleValue];x.userInteractionEnabled=[d[@"interaction"]boolValue];x.frame=[d[@"frame"]CGRectValue];}s.saved=nil;}for(C18FiveModuleHost*h in s.hosts.allValues)h.hidden=YES;if(remove){for(C18FiveModuleHost*h in s.hosts.allValues)[h close];[s.hosts removeAllObjects];}}
+static void Reload(void){NSArray*s=nil;NSInteger m=0;C18FiveRead(&m,&s);gMode=m;gSlots=s?:C18FiveDefaultSlots();gLoaded=YES;}
+static void Apply(UIView*v){if(!gLoaded)Reload();if(!Eligible(v)){Restore(v,gMode==0);return;}NSArray*b,*t;UIView*c;if(!Parts(v,&b,&t,&c))return;C18FiveState*st=State(v,YES);if(st.applied)return;NSMutableArray*save=[NSMutableArray array];for(UIView*x in [b arrayByAddingObjectsFromArray:t]) [save addObject:@{@"view":x,@"hidden":@(x.hidden),@"alpha":@(x.alpha),@"interaction":@(x.userInteractionEnabled),@"frame":[NSValue valueWithCGRect:x.frame]}];st.saved=save;st.applied=YES;c.frame=v.bounds;c.hidden=NO;for(UIView*x in t)x.hidden=YES;for(UIControl*x in b)x.hidden=YES;C18Position p[7];int n=C18CalculatePositions((int)gMode,v.bounds.size.width,v.bounds.size.height,p);NSMutableArray*items=[[gSlots subarrayWithRange:NSMakeRange(0,gMode)]mutableCopy];if(gMode==4)for(int i=0;i<7&&items.count<7;i++){NSString*s=C18FiveBuiltinID(i);if(![items containsObject:s])[items addObject:s];}for(int i=0;i<n;i++){NSString*slot=items[i];NSInteger bi=C18FiveBuiltinIndex(slot);UIView*x;if(bi!=NSNotFound)x=b[bi];else{C18FiveModuleHost*h=st.hosts[slot];if(!h){h=[[C18FiveModuleHost alloc]initWithSlotID:slot owner:v];st.hosts[slot]=h;[c addSubview:h];}x=h;}x.frame=CGRectMake(p[i].x,p[i].y,p[i].side,p[i].side);x.hidden=NO;x.userInteractionEnabled=YES;[x setNeedsLayout];}}
+static void Discover(void){if(!gInstalled)return;id shell=C18FiveObject(objc_getClass("C18Shell"),NSSelectorFromString(@"shared"));for(id m in C18FiveObject(shell,NSSelectorFromString(@"moduleViews"))){id c=C18FiveObject(m,NSSelectorFromString(@"contentView"));if([c isKindOfClass:objc_getClass("C18ConnectivityView")])[gViews addObject:c];}}
+static void Layout(id s,SEL c){if(oLayout)oLayout(s,c);C18FiveColumnApply(C18FiveObject(objc_getClass("C18Shell"),NSSelectorFromString(@"shared")));Discover();for(UIView*v in gViews.allObjects)Apply(v);}
+static void Roles(id s,SEL c){if(oRoles)oRoles(s,c);Apply(s);}static void Alphas(id s,SEL c){if(oAlphas)oAlphas(s,c);Apply(s);}static void Grid(id s,SEL c,long long z){if(oGrid)oGrid(s,c,z);Apply(s);}static void Expanded(id s,SEL c,BOOL z){if(oExpanded)oExpanded(s,c,z);Apply(s);}static void Window(id s,SEL c){if(oWindow)oWindow(s,c);Apply(s);}
+static BOOL Can(id s,SEL c){return gMode==5&&Eligible(s)?NO:(oCanExpand?oCanExpand(s,c):NO);}static BOOL Should(id s,SEL c,CGPoint p){return gMode==5&&Eligible(s)?NO:(oShouldExpand?oShouldExpand(s,c,p):NO);}
+static void Install(void){Class shell=objc_getClass("C18Shell");if(!gShellLayout&&class_getInstanceMethod(shell,@selector(layout))){gShellLayout=YES;MSHookMessageEx(shell,@selector(layout),(IMP)^(id s,SEL c){if(oShellLayout)oShellLayout(s,c);C18FiveColumnApply(s);},(IMP*)&oShellLayout);}Class cls=objc_getClass("C18ConnectivityView");if(!cls||gInstalled)return;gInstalled=YES;gViews=[NSHashTable weakObjectsHashTable];Reload();MSHookMessageEx(cls,@selector(layoutSubviews),(IMP)Layout,(IMP*)&oLayout);MSHookMessageEx(cls,@selector(_applyButtonRoles),(IMP)Roles,(IMP*)&oRoles);MSHookMessageEx(cls,@selector(_applyLayoutAlphas),(IMP)Alphas,(IMP*)&oAlphas);MSHookMessageEx(cls,@selector(setGridSize:),(IMP)Grid,(IMP*)&oGrid);MSHookMessageEx(cls,@selector(setExpanded:),(IMP)Expanded,(IMP*)&oExpanded);MSHookMessageEx(cls,@selector(didMoveToWindow),(IMP)Window,(IMP*)&oWindow);MSHookMessageEx(cls,@selector(canExpand),(IMP)Can,(IMP*)&oCanExpand);MSHookMessageEx(cls,@selector(shouldExpandOnTouchAtPoint:),(IMP)Should,(IMP*)&oShouldExpand);C18FiveInstallModuleHooks();C18FiveInstallEditor();C18SIMInstallCard();Discover();}
+__attribute__((constructor))static void Init(void){dispatch_async(dispatch_get_main_queue(),^{Install();});dispatch_after(dispatch_time(DISPATCH_TIME_NOW,NSEC_PER_SEC),dispatch_get_main_queue(),^{Install();});}
