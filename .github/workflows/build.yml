@@ -31,7 +31,7 @@ jobs:
           done
           xcrun lipo -create -output build/C18ConnectivityFive.dylib build/C18ConnectivityFive-arm64.dylib build/C18ConnectivityFive-arm64e.dylib
           xcrun codesign --force --sign - --timestamp=none build/C18ConnectivityFive.dylib
-      - name: Package deb
+      - name: Package beta4
         run: |
           set -euo pipefail
           python3 tools/package_beta4.py
