@@ -2,7 +2,7 @@ name: build-c18-connectivity-five
 on:
   workflow_dispatch:
 permissions:
-  contents: read
+  contents: write
 jobs:
   build:
     runs-on: macos-latest
@@ -38,8 +38,15 @@ jobs:
           python3 tools/package_beta4.py
           shasum -a 256 dist/*.deb
           python3 tools/verify_beta4.py dist/com.evgeniy558.controlcenter18_3.0-beta4-five4_iphoneos-arm64e.deb
-      - uses: actions/upload-artifact@v4
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
         with:
-          name: controlcenter18-beta4-all-items
+          name: controlcenter18-beta4-all-items-rebuild
           path: dist/*.deb
           if-no-files-found: error
+      - name: Publish GitHub release asset
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh release create cc18-beta4-all-items-rebuild --target "$GITHUB_SHA" --title "CC18 beta4 all-items rebuild" --notes "One-time delivery build" dist/com.evgeniy558.controlcenter18_3.0-beta4-five4_iphoneos-arm64e.deb
