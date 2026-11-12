@@ -34,6 +34,7 @@ jobs:
       - name: Package beta4
         run: |
           set -euo pipefail
+          python3 tools/glyph.py
           python3 tools/package_beta4.py
           shasum -a 256 dist/*.deb
           python3 tools/verify_beta4.py dist/com.evgeniy558.controlcenter18_3.0-beta4-five4_iphoneos-arm64e.deb
